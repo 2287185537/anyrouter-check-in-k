@@ -129,10 +129,10 @@ async def get_waf_cookies_with_playwright(account_name: str, login_url: str, req
 				return None
 
 
-def get_user_info(client, headers, user_info_url: str):
+async def get_user_info(client, headers, user_info_url: str):
 	"""获取用户信息"""
 	try:
-		response = client.get(user_info_url, headers=headers, timeout=30)
+		response = await client.get(user_info_url, headers=headers, timeout=30)
 
 		if response.status_code == 200:
 			if not response.text.strip():
@@ -169,7 +169,7 @@ async def prepare_cookies(account_name: str, provider_config, user_cookies: dict
 	return {**waf_cookies, **user_cookies}
 
 
-def execute_check_in(client, account_name: str, provider_config, headers: dict):
+async def execute_check_in(client, account_name: str, provider_config, headers: dict):
 	"""执行签到请求"""
 	print(f'[NETWORK] {account_name}: Executing check-in')
 
@@ -177,7 +177,7 @@ def execute_check_in(client, account_name: str, provider_config, headers: dict):
 	checkin_headers.update({'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest'})
 
 	sign_in_url = f'{provider_config.domain}{provider_config.sign_in_path}'
-	response = client.post(sign_in_url, headers=checkin_headers, timeout=30)
+	response = await client.post(sign_in_url, headers=checkin_headers, timeout=30)
 
 	print(f'[RESPONSE] {account_name}: Response status code {response.status_code}')
 
@@ -279,54 +279,51 @@ async def check_in_account(account: AccountConfig, account_index: int, app_confi
 	if not all_cookies:
 		return False, None
 
-	client = httpx.Client(http2=True, timeout=30.0)
+	async with httpx.AsyncClient(http2=True, timeout=30.0) as client:
+		try:
+			client.cookies.update(all_cookies)
 
-	try:
-		client.cookies.update(all_cookies)
+			headers = {
+				'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36',
+				'Accept': 'application/json, text/plain, */*',
+				'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+				'Accept-Encoding': 'gzip, deflate, br, zstd',
+				'Referer': provider_config.domain,
+				'Origin': provider_config.domain,
+				'Connection': 'keep-alive',
+				'Sec-Fetch-Dest': 'empty',
+				'Sec-Fetch-Mode': 'cors',
+				'Sec-Fetch-Site': 'same-origin',
+				provider_config.api_user_key: account.api_user,
+			}
 
-		headers = {
-			'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36',
-			'Accept': 'application/json, text/plain, */*',
-			'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-			'Accept-Encoding': 'gzip, deflate, br, zstd',
-			'Referer': provider_config.domain,
-			'Origin': provider_config.domain,
-			'Connection': 'keep-alive',
-			'Sec-Fetch-Dest': 'empty',
-			'Sec-Fetch-Mode': 'cors',
-			'Sec-Fetch-Site': 'same-origin',
-			provider_config.api_user_key: account.api_user,
-		}
+			user_info_url = f'{provider_config.domain}{provider_config.user_info_path}'
+			user_info_before = await get_user_info(client, headers, user_info_url)
+			if user_info_before and user_info_before.get('success'):
+				print(user_info_before['display'])
+			elif user_info_before:
+				print(user_info_before.get('error', 'Unknown error'))
 
-		user_info_url = f'{provider_config.domain}{provider_config.user_info_path}'
-		user_info_before = get_user_info(client, headers, user_info_url)
-		if user_info_before and user_info_before.get('success'):
-			print(user_info_before['display'])
-		elif user_info_before:
-			print(user_info_before.get('error', 'Unknown error'))
+			if provider_config.needs_manual_check_in():
+				success = await execute_check_in(client, account_name, provider_config, headers)
+				# 签到后再次获取用户信息，用于计算签到收益
+				user_info_after = await get_user_info(client, headers, user_info_url)
+				return success, user_info_before, user_info_after
+			else:
+				print(f'[INFO] {account_name}: Check-in completed automatically (triggered by user info request)')
+				# 自动签到的情况，再次获取用户信息
+				user_info_after = await get_user_info(client, headers, user_info_url)
+				# 如果签到前后均无法获取用户信息，则认为自动签到失败
+				auto_success = (user_info_before and user_info_before.get('success')) or (
+					user_info_after and user_info_after.get('success')
+				)
+				if not auto_success:
+					print(f'[WARN] {account_name}: Auto check-in could not be verified (user info unavailable)')
+				return auto_success, user_info_before, user_info_after
 
-		if provider_config.needs_manual_check_in():
-			success = execute_check_in(client, account_name, provider_config, headers)
-			# 签到后再次获取用户信息，用于计算签到收益
-			user_info_after = get_user_info(client, headers, user_info_url)
-			return success, user_info_before, user_info_after
-		else:
-			print(f'[INFO] {account_name}: Check-in completed automatically (triggered by user info request)')
-			# 自动签到的情况，再次获取用户信息
-			user_info_after = get_user_info(client, headers, user_info_url)
-			# 如果签到前后均无法获取用户信息，则认为自动签到失败
-			auto_success = (user_info_before and user_info_before.get('success')) or (
-				user_info_after and user_info_after.get('success')
-			)
-			if not auto_success:
-				print(f'[WARN] {account_name}: Auto check-in could not be verified (user info unavailable)')
-			return auto_success, user_info_before, user_info_after
-
-	except Exception as e:
-		print(f'[FAILED] {account_name}: Error occurred during check-in process - {str(e)[:50]}...')
-		return False, None, None
-	finally:
-		client.close()
+		except Exception as e:
+			print(f'[FAILED] {account_name}: Error occurred during check-in process - {str(e)[:50]}...')
+			return False, None, None
 
 
 async def main():
