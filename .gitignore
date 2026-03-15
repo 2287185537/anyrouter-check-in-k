@@ -8,3 +8,6 @@ __pycache__
 balance_hash.txt
 
 .DS_Store
+.coverage
+coverage.xml
+htmlcov/
