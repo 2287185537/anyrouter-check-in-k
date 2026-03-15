@@ -135,6 +135,8 @@ def get_user_info(client, headers, user_info_url: str):
 		response = client.get(user_info_url, headers=headers, timeout=30)
 
 		if response.status_code == 200:
+			if not response.text.strip():
+				return {'success': False, 'error': 'Failed to get user info: Empty response body'}
 			data = response.json()
 			if data.get('success'):
 				user_data = data.get('data', {})
@@ -312,7 +314,13 @@ async def check_in_account(account: AccountConfig, account_index: int, app_confi
 			print(f'[INFO] {account_name}: Check-in completed automatically (triggered by user info request)')
 			# 自动签到的情况，再次获取用户信息
 			user_info_after = get_user_info(client, headers, user_info_url)
-			return True, user_info_before, user_info_after
+			# 如果签到前后均无法获取用户信息，则认为自动签到失败
+			auto_success = (user_info_before and user_info_before.get('success')) or (
+				user_info_after and user_info_after.get('success')
+			)
+			if not auto_success:
+				print(f'[WARN] {account_name}: Auto check-in could not be verified (user info unavailable)')
+			return auto_success, user_info_before, user_info_after
 
 	except Exception as e:
 		print(f'[FAILED] {account_name}: Error occurred during check-in process - {str(e)[:50]}...')
